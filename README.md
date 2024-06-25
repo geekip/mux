@@ -1,5 +1,5 @@
 # geekip/mux
-Agent of Milo Monitoring
+A simple and lightweight Go HTTP router implemented using a trie tree.
 
 ## Features
 
@@ -28,6 +28,7 @@ func main() {
   router := mux.New()
   router.Handle("/hello", http.HandlerFunc(handler))
   router.HandlerFunc("/world", handler)
+
   log.Fatal(http.ListenAndServe(":8080", router))
 }
 ```
@@ -39,7 +40,7 @@ type Handler struct{
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	w.Write([]byte(h.content))
+  w.Write([]byte(h.content))
 }
 
 func main() {
@@ -99,7 +100,7 @@ func main() {
 
 ``` go
 func handler(w http.ResponseWriter, req *http.Request) {
-  params,_ := gorouter.Params(req)
+  params,_ := mux.Params(req)
   w.Write([]byte("match user/:id ! get id:" + params["id"]))
 }
 
@@ -142,9 +143,9 @@ func main() {
   router := mux.New()
   user := router.Group("/admin")
   {
-    // get user/list
+    // get /admin/user/list
     user.Method("GET").HandlerFunc("/user",handler)
-    // put user/edit
+    // put /admin/user/edit
     user.Method("PUT").HandlerFunc("/user",handler)
   }
   
@@ -188,7 +189,7 @@ func main() {
 ### FileServe
 
 ``` go
-func FileHandler(dir string) http.Handler {
+func fileHandler(dir string) http.Handler {
   return func(w http.ResponseWriter, req *http.Request) {
     params := mux.Params(req)
     basePath := strings.TrimSuffix(req.URL.Path, params["*"])
