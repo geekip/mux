@@ -70,7 +70,7 @@ func main() {
     http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
   })
 
-  router.HandlerFunc("/user")
+  router.HandlerFunc("/user", handler)
   log.Fatal(http.ListenAndServe(":8080", router))
 }
 ```
@@ -106,7 +106,7 @@ func handler(w http.ResponseWriter, req *http.Request) {
 
 func main() {
   router := mux.New()
-  // http://localhost:8080/hello/123
+  // http://localhost:8080/user/123
   router.Handle("/user/:id", http.HandlerFunc(handler))
   
   log.Fatal(http.ListenAndServe(":8080", router))
@@ -124,7 +124,7 @@ func handler(w http.ResponseWriter, req *http.Request) {
 
 func main() {
   router := mux.New()
-  // http://localhost:8080/hello/foo/bar
+  // http://localhost:8080/user/foo/bar
   router.Handle("/user/*", http.HandlerFunc(handler))
   
   log.Fatal(http.ListenAndServe(":8080", router))
@@ -180,7 +180,7 @@ func middleware2(next http.Handler) http.Handler {
 func main() {
   router := mux.New()
   router.Use(middleware1, middleware2)
-  router.HandlerFunc("/user")
+  router.HandlerFunc("/user", handler)
   
   log.Fatal(http.ListenAndServe(":8080", router))
 }
