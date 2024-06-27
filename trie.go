@@ -10,18 +10,14 @@ type (
 	contextKey int
 
 	trie struct {
-		root *trieNode
-	}
-
-	trieNode struct {
 		handler       http.Handler
 		middlewares   []Middleware
 		methods       map[string]http.Handler
 		paramName     string
 		params        map[string]string
-		children      map[rune]*trieNode
-		paramChild    *trieNode
-		wildcardChild *trieNode
+		children      map[rune]*trie
+		paramChild    *trie
+		wildcardChild *trie
 		isEnd         bool
 	}
 )
@@ -35,22 +31,17 @@ const (
 )
 
 func newTrie() *trie {
-	return &trie{root: newTrieNode()}
-}
-
-func newTrieNode() *trieNode {
-	return &trieNode{
-		children: make(map[rune]*trieNode),
+	return &trie{
+		children: make(map[rune]*trie),
 		methods:  make(map[string]http.Handler),
 		params:   make(map[string]string),
 	}
 }
 
-func (t *trie) add(method, pattern string, handler http.Handler, middlewares []Middleware) {
+func (node *trie) add(method, pattern string, handler http.Handler, middlewares []Middleware) *trie {
 	if method == "" || pattern == "" || handler == nil {
-		return
+		return nil
 	}
-	node := t.root
 	segments := strings.Split(pattern, "/")
 	for _, segment := range segments {
 		if segment == "" {
@@ -59,20 +50,20 @@ func (t *trie) add(method, pattern string, handler http.Handler, middlewares []M
 		switch {
 		case strings.HasPrefix(segment, paramPrefix):
 			if node.paramChild == nil {
-				node.paramChild = newTrieNode()
+				node.paramChild = newTrie()
 			}
 			node.paramChild.paramName = segment[1:]
 			node = node.paramChild
 		case strings.HasPrefix(segment, wildcardPrefix):
 			if node.wildcardChild == nil {
-				node.wildcardChild = newTrieNode()
+				node.wildcardChild = newTrie()
 			}
 			node.wildcardChild.paramName = segment
 			node = node.wildcardChild
 		default:
 			for _, char := range segment {
 				if _, exists := node.children[char]; !exists {
-					node.children[char] = newTrieNode()
+					node.children[char] = newTrie()
 				}
 				node = node.children[char]
 			}
@@ -81,12 +72,12 @@ func (t *trie) add(method, pattern string, handler http.Handler, middlewares []M
 	node.middlewares = append(node.middlewares, middlewares...)
 	node.methods[method] = handler
 	node.isEnd = true
+	return node
 }
 
-func (t *trie) find(method, pattern string) *trieNode {
-	node := t.root
+func (node *trie) find(method, url string) *trie {
 	params := make(map[string]string)
-	segments := strings.Split(pattern, "/")
+	segments := strings.Split(url, "/")
 	for i, segment := range segments {
 		if segment == "" {
 			continue
@@ -117,19 +108,27 @@ func (t *trie) find(method, pattern string) *trieNode {
 	}
 
 	if node.isEnd {
+		// get handler
 		handler := node.methods[method]
 		if handler == nil {
 			handler = node.methods[methodAllPrefix]
 		}
-
-		node.handler = handler
+		// with middlewares
+		mws := node.middlewares
+		count := len(mws)
+		if handler != nil && count > 0 {
+			for i := count - 1; i >= 0; i-- {
+				handler = mws[i](handler)
+			}
+		}
 		node.params = params
+		node.handler = handler
 		return node
 	}
 	return nil
 }
 
-func (t *trieNode) withContext(r *http.Request) *http.Request {
+func (t *trie) withContext(r *http.Request) *http.Request {
 	ctx := context.WithValue(r.Context(), routeKey, t)
 	if len(t.params) > 0 {
 		ctx = context.WithValue(ctx, paramKey, t.params)

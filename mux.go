@@ -13,10 +13,9 @@ type (
 		middlewares      []Middleware
 		notFound         http.HandlerFunc
 		methodNotAllowed http.HandlerFunc
-		internalError    errHandlerFunc
+		internalError    http.HandlerFunc
 	}
-	Middleware     func(next http.Handler) http.Handler
-	errHandlerFunc func(w http.ResponseWriter, r *http.Request, err interface{})
+	Middleware func(http.Handler) http.Handler
 )
 
 func New() *Mux {
@@ -25,7 +24,7 @@ func New() *Mux {
 		notFound: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "404 page not found", http.StatusNotFound)
 		},
-		internalError: func(w http.ResponseWriter, r *http.Request, err interface{}) {
+		internalError: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "500 internal server error", http.StatusInternalServerError)
 		},
 		methodNotAllowed: func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +61,7 @@ func (m *Mux) Handle(pattern string, handler http.Handler) *Mux {
 		method = strings.ToUpper(method)
 		m.trie.add(method, fullPattern, handler, m.middlewares)
 	}
+	m.methods = m.methods[:0]
 	return m
 }
 
@@ -72,25 +72,20 @@ func (m *Mux) HandleFunc(pattern string, handler http.HandlerFunc) *Mux {
 func (m *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
-			m.internalError(w, r, err)
+			m.internalError.ServeHTTP(w, r)
 		}
 	}()
 
+	var handler http.Handler
 	node := m.trie.find(r.Method, r.URL.Path)
 	if node == nil {
-		m.notFound.ServeHTTP(w, r)
-		return
-	}
-	if node.handler == nil {
-		m.methodNotAllowed.ServeHTTP(w, r)
-		return
-	}
-
-	r = node.withContext(r)
-	handler := node.handler
-	mws := node.middlewares
-	for i := len(mws) - 1; i >= 0; i-- {
-		handler = mws[i](handler)
+		handler = m.notFound
+	} else {
+		handler = node.handler
+		if handler == nil {
+			handler = m.methodNotAllowed
+		}
+		r = node.withContext(r)
 	}
 	handler.ServeHTTP(w, r)
 }
@@ -100,7 +95,7 @@ func (m *Mux) NotFound(handler http.HandlerFunc) *Mux {
 	return m
 }
 
-func (m *Mux) InternalError(handler errHandlerFunc) *Mux {
+func (m *Mux) InternalError(handler http.HandlerFunc) *Mux {
 	m.internalError = handler
 	return m
 }
@@ -117,9 +112,9 @@ func Params(r *http.Request) map[string]string {
 	return nil
 }
 
-func CurrentRoute(r *http.Request) *trieNode {
+func CurrentRoute(r *http.Request) *trie {
 	if val := r.Context().Value(routeKey); val != nil {
-		return val.(*trieNode)
+		return val.(*trie)
 	}
 	return nil
 }
