@@ -4,5 +4,5 @@
 
 package mux
 
-// Version is the current gin framework's version.
+// Version is the current version.
 const Version = "v1.0.0"
