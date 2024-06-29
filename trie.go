@@ -7,7 +7,7 @@ import (
 )
 
 type (
-	contextKey int
+	ctxKey int
 
 	trie struct {
 		handler       http.Handler
@@ -23,11 +23,11 @@ type (
 )
 
 const (
-	paramKey        contextKey = 0
-	routeKey        contextKey = 1
-	paramPrefix     string     = ":"
-	wildcardPrefix  string     = "*"
-	methodAllPrefix string     = "*"
+	keyParam        ctxKey = 0
+	keyRoute        ctxKey = 1
+	prefixParam     string = ":"
+	prefixWildcard  string = "*"
+	prefixMethodAll string = "*"
 )
 
 func newTrie() *trie {
@@ -48,13 +48,13 @@ func (node *trie) add(method, pattern string, handler http.Handler, middlewares 
 			continue
 		}
 		switch {
-		case strings.HasPrefix(segment, paramPrefix):
+		case strings.HasPrefix(segment, prefixParam):
 			if node.paramChild == nil {
 				node.paramChild = newTrie()
 			}
 			node.paramChild.paramName = segment[1:]
 			node = node.paramChild
-		case strings.HasPrefix(segment, wildcardPrefix):
+		case strings.HasPrefix(segment, prefixWildcard):
 			if node.wildcardChild == nil {
 				node.wildcardChild = newTrie()
 			}
@@ -111,7 +111,7 @@ func (node *trie) find(method, url string) *trie {
 		// get handler
 		handler := node.methods[method]
 		if handler == nil {
-			handler = node.methods[methodAllPrefix]
+			handler = node.methods[prefixMethodAll]
 		}
 		// with middlewares
 		mws := node.middlewares
@@ -129,9 +129,9 @@ func (node *trie) find(method, url string) *trie {
 }
 
 func (t *trie) withContext(r *http.Request) *http.Request {
-	ctx := context.WithValue(r.Context(), routeKey, t)
+	ctx := context.WithValue(r.Context(), keyParam, t)
 	if len(t.params) > 0 {
-		ctx = context.WithValue(ctx, paramKey, t.params)
+		ctx = context.WithValue(ctx, keyParam, t.params)
 	}
 	return r.WithContext(ctx)
 }
