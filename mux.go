@@ -13,40 +13,38 @@ import (
 type (
 	Middleware func(http.Handler) http.Handler
 	Mux        struct {
-		prefix           string
-		methods          []string
-		trie             *trie
-		middlewares      []Middleware
-		notFound         http.HandlerFunc
-		methodNotAllowed http.HandlerFunc
-		internalError    http.HandlerFunc
+		prefix                  string
+		methods                 []string
+		node                    *node
+		middlewares             []Middleware
+		notFoundHandler         http.HandlerFunc
+		methodNotAllowedHandler http.HandlerFunc
+		internalErrorHandler    http.HandlerFunc
+		panicHandler            func(error)
 	}
-)
-
-var (
-	errMiddleware = errors.New("unkown http middleware")
-	errHandle     = errors.New("mux handle error")
-	errMethod     = errors.New("unkown http method")
 )
 
 func New() *Mux {
 	return &Mux{
-		trie: newTrie(),
-		notFound: func(w http.ResponseWriter, r *http.Request) {
+		node: newNode(),
+		notFoundHandler: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "404 page not found", http.StatusNotFound)
 		},
-		methodNotAllowed: func(w http.ResponseWriter, r *http.Request) {
+		methodNotAllowedHandler: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
 		},
-		internalError: func(w http.ResponseWriter, r *http.Request) {
+		internalErrorHandler: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "500 internal server error", http.StatusInternalServerError)
+		},
+		panicHandler: func(err error) {
+			panic(err)
 		},
 	}
 }
 
 func (m *Mux) Use(middlewares ...Middleware) *Mux {
 	if len(middlewares) == 0 {
-		panic(errMiddleware)
+		m.panicHandler(errors.New("mux unkown middleware"))
 	}
 	m.middlewares = append(m.middlewares, middlewares...)
 	return m
@@ -55,14 +53,14 @@ func (m *Mux) Use(middlewares ...Middleware) *Mux {
 func (m *Mux) Group(pattern string) *Mux {
 	return &Mux{
 		prefix:      m.prefix + "/" + pattern,
-		trie:        m.trie,
+		node:        m.node,
 		middlewares: m.middlewares,
 	}
 }
 
 func (m *Mux) Method(methods ...string) *Mux {
 	if len(methods) == 0 {
-		panic(errMethod)
+		m.panicHandler(errors.New("mux unkown http method"))
 	}
 	m.methods = append(m.methods, methods...)
 	return m
@@ -70,18 +68,16 @@ func (m *Mux) Method(methods ...string) *Mux {
 
 func (m *Mux) Handle(pattern string, handler http.Handler) *Mux {
 	fullPattern := m.prefix + "/" + pattern
-	methods := m.methods
-	if len(methods) == 0 {
-		methods = []string{prefixMethodAll}
+	if len(m.methods) == 0 {
+		m.methods = append(m.methods, prefixWildcard)
 	}
-	for _, method := range methods {
-		method = strings.ToUpper(method)
-		node := m.trie.add(method, fullPattern, handler, m.middlewares)
+	for _, method := range m.methods {
+		node := m.node.add(strings.ToUpper(method), fullPattern, handler, m.middlewares)
 		if node == nil {
-			panic(errHandle)
+			m.panicHandler(errors.New("mux handle error"))
 		}
 	}
-	m.methods = m.methods[:0]
+	m.methods = nil
 	return m
 }
 
@@ -92,36 +88,41 @@ func (m *Mux) HandlerFunc(pattern string, handler http.HandlerFunc) *Mux {
 func (m *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
-			m.internalError.ServeHTTP(w, r)
+			m.internalErrorHandler.ServeHTTP(w, r)
 		}
 	}()
 
 	var handler http.Handler
-	node := m.trie.find(r.Method, r.URL.Path)
+	node := m.node.find(r.Method, r.URL.Path)
 	if node == nil {
-		handler = m.notFound
+		handler = m.notFoundHandler
 	} else {
 		handler = node.handler
 		if handler == nil {
-			handler = m.methodNotAllowed
+			handler = m.methodNotAllowedHandler
 		}
 		r = node.withContext(r)
 	}
 	handler.ServeHTTP(w, r)
 }
 
-func (m *Mux) NotFound(handler http.HandlerFunc) *Mux {
-	m.notFound = handler
+func (m *Mux) NotFoundHandler(handler http.HandlerFunc) *Mux {
+	m.notFoundHandler = handler
 	return m
 }
 
-func (m *Mux) InternalError(handler http.HandlerFunc) *Mux {
-	m.internalError = handler
+func (m *Mux) InternalErrorHandler(handler http.HandlerFunc) *Mux {
+	m.internalErrorHandler = handler
 	return m
 }
 
-func (m *Mux) MethodNotAllowed(handler http.HandlerFunc) *Mux {
-	m.methodNotAllowed = handler
+func (m *Mux) MethodNotAllowedHandler(handler http.HandlerFunc) *Mux {
+	m.methodNotAllowedHandler = handler
+	return m
+}
+
+func (m *Mux) PanicHandler(handler func(error)) *Mux {
+	m.panicHandler = handler
 	return m
 }
 
@@ -132,9 +133,9 @@ func Params(r *http.Request) map[string]string {
 	return nil
 }
 
-func CurrentRoute(r *http.Request) *trie {
+func CurrentRoute(r *http.Request) *node {
 	if val := r.Context().Value(keyRoute); val != nil {
-		return val.(*trie)
+		return val.(*node)
 	}
 	return nil
 }
