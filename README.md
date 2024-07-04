@@ -8,6 +8,7 @@ A simple and lightweight Go HTTP router implemented using a trie tree.
 * [Custom error handler](#custom-error-handler)
 * [Methods](#methods)
 * [Parameters](#parameters)
+* [Regexp](#regexp)
 * [Wildcard](#wildcard)
 * [Group](#group)
 * [Middleware](#middleware)
@@ -60,15 +61,19 @@ func handler(w http.ResponseWriter, req *http.Request) {
 
 func main() {
   router := mux.New()
-  router.NotFound(func(w http.ResponseWriter, r *http.Request) {
+  router.NotFoundHandler(func(w http.ResponseWriter, r *http.Request) {
     http.Error(w, "404 page not found", http.StatusNotFound)
   })
-  router.InternalError(func(w http.ResponseWriter, r *http.Request, err interface{}) {
+  router.InternalErrorHandler(func(w http.ResponseWriter, r *http.Request, err interface{}) {
     http.Error(w, "500 internal server error", http.StatusInternalServerError)
   })
-  router.MethodNotAllowed(func(w http.ResponseWriter, r *http.Request) {
+  router.MethodNotAllowedHandler(func(w http.ResponseWriter, r *http.Request) {
     http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
   })
+  router.PanicHandler(func(err error) {
+    panic(err)
+  })
+
 
   router.HandlerFunc("/user", handler)
   log.Fatal(http.ListenAndServe(":8080", router))
@@ -101,14 +106,31 @@ func main() {
 ``` go
 func handler(w http.ResponseWriter, req *http.Request) {
   params,_ := mux.Params(req)
-  w.Write([]byte("match user/:id ! get id:" + params["id"]))
+  w.Write([]byte("id:" + params["id"]))
 }
 
 func main() {
   router := mux.New()
   // http://localhost:8080/user/123
-  router.Handle("/user/:id", http.HandlerFunc(handler))
+  router.Handle("/user/{id}", http.HandlerFunc(handler))
   
+  log.Fatal(http.ListenAndServe(":8080", router))
+}
+```
+
+### Regexp
+
+``` go
+func handler(w http.ResponseWriter, req *http.Request) {
+  params := mux.Params(req)
+  w.Write([]byte("id:" + params["id"] + " name:" + params["name"]))
+}
+
+func main() {
+  router := mux.New()
+  // http://localhost:8080/user/123/nick
+  router.Handle("/user/{id:[0-9]+}/{name:[a-zA-Z]+}", http.HandlerFunc(handler))
+
   log.Fatal(http.ListenAndServe(":8080", router))
 }
 ```
@@ -119,13 +141,14 @@ func main() {
 func handler(w http.ResponseWriter, req *http.Request) {
   params := mux.Params(req)
   // foo/bar
-  w.Write([]byte(params["*"]))
+  w.Write([]byte(params["*"] + params["*named"]))
 }
 
 func main() {
   router := mux.New()
   // http://localhost:8080/user/foo/bar
-  router.Handle("/user/*", http.HandlerFunc(handler))
+  router.Handle("/user/{*}", http.HandlerFunc(handler))
+  router.Handle("/user/{*named}", http.HandlerFunc(handler))
   
   log.Fatal(http.ListenAndServe(":8080", router))
 }
@@ -200,7 +223,7 @@ func fileHandler(dir string) http.Handler {
 
 func main() {
   router := mux.New()
-  router.HandleFunc("/files/*",fileHandler("./folder"))
+  router.HandleFunc("/files/{*}",fileHandler("./folder"))
   
   log.Fatal(http.ListenAndServe(":8080", router))
 }
