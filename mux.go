@@ -36,9 +36,7 @@ func New() *Mux {
 		internalErrorHandler: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "500 internal server error", http.StatusInternalServerError)
 		},
-		panicHandler: func(err error) {
-			panic(err)
-		},
+		panicHandler: func(err error) { panic(err) },
 	}
 }
 

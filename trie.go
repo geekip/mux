@@ -38,6 +38,7 @@ var (
 	suffixParam    string = "}"
 )
 
+// creates and caches a regular expression pattern
 func makeRegexp(pattern string) *regexp.Regexp {
 	if re, exists := regexCache[pattern]; exists {
 		return re
@@ -47,6 +48,7 @@ func makeRegexp(pattern string) *regexp.Regexp {
 	return re
 }
 
+// creates node
 func newNode() *node {
 	return &node{
 		children: make(map[rune]*node),
@@ -55,6 +57,7 @@ func newNode() *node {
 	}
 }
 
+// insert node
 func (node *node) add(method, pattern string, handler http.Handler, middlewares []Middleware) *node {
 	if method == "" || pattern == "" || handler == nil {
 		return nil
@@ -64,14 +67,27 @@ func (node *node) add(method, pattern string, handler http.Handler, middlewares 
 		if segment == "" {
 			continue
 		}
+		// parameter path
 		if strings.HasPrefix(segment, prefixParam) && strings.HasSuffix(segment, suffixParam) {
 			if node.paramNode == nil {
 				node.paramNode = newNode()
 			}
-			node.paramNode.extractParam(segment)
+			param := segment[1 : len(segment)-1]
+			parts := strings.SplitN(param, prefixRegexp, 2)
+			node.paramNode.paramName = parts[0]
+			if len(parts) == 2 {
+				node.paramNode.regex = makeRegexp(parts[1])
+			}
 			node = node.paramNode
+
+			// static path
 		} else {
-			node = node.addChildNodes(segment)
+			for _, char := range segment {
+				if _, exists := node.children[char]; !exists {
+					node.children[char] = newNode()
+				}
+				node = node.children[char]
+			}
 		}
 	}
 	node.isEnd = true
@@ -80,25 +96,59 @@ func (node *node) add(method, pattern string, handler http.Handler, middlewares 
 	return node
 }
 
+// Finds a matching route node
 func (node *node) find(method, url string) *node {
 	params := make(map[string]string)
 	segments := strings.Split(url, "/")
-	for _, segment := range segments {
+	for i, segment := range segments {
 		if segment == "" {
 			continue
 		}
-		node = node.findNode(segment, params)
+		// match static path
+		match := true
+		for _, char := range segment {
+			if child, ok := node.children[char]; ok {
+				node = child
+			} else {
+				match = false
+				break
+			}
+		}
+		if match {
+			continue
+		}
+
+		// match parameter path
+		node = node.paramNode
 		if node == nil {
+			return node
+		}
+
+		// parameter node has a regex
+		if node.regex != nil {
+			if node.regex.MatchString(segment) {
+				params[node.paramName] = segment
+				return node
+			}
 			return nil
 		}
-	}
 
+		// match wildcard parameter
+		if strings.HasPrefix(node.paramName, prefixWildcard) {
+			params[node.paramName] = strings.Join(segments[i:], "/")
+			break
+		} else {
+			params[node.paramName] = segment
+			continue
+		}
+	}
 	if node.isEnd {
 		// get handler
 		handler := node.methods[method]
 		if handler == nil {
 			handler = node.methods[prefixWildcard]
 		}
+
 		// with middlewares
 		mws := node.middlewares
 		count := len(mws)
@@ -114,64 +164,7 @@ func (node *node) find(method, url string) *node {
 	return nil
 }
 
-func (n *node) addChildNodes(segment string) *node {
-	for _, char := range segment {
-		if _, exists := n.children[char]; !exists {
-			n.children[char] = newNode()
-		}
-		n = n.children[char]
-	}
-	return n
-}
-
-func (n *node) extractParam(part string) {
-	part = part[1 : len(part)-1]
-	parts := strings.SplitN(part, prefixRegexp, 2)
-	n.paramName = parts[0]
-	if len(parts) == 2 {
-		n.regex = makeRegexp(parts[1])
-	}
-}
-
-func (n *node) findNode(segment string, params map[string]string) *node {
-	if childNode := n.findStatic(segment); childNode != nil {
-		return childNode
-	}
-	if paramNode := n.findParam(segment, params); paramNode != nil {
-		return paramNode
-	}
-	return nil
-}
-
-func (n *node) findStatic(segment string) *node {
-	node := n
-	for _, char := range segment {
-		if child, ok := node.children[char]; ok {
-			node = child
-		} else {
-			return nil
-		}
-	}
-	return node
-}
-
-func (n *node) findParam(segment string, params map[string]string) *node {
-	if n.paramNode == nil {
-		return nil
-	}
-	paramNode := n.paramNode
-	if paramNode.regex != nil {
-		if paramNode.regex.MatchString(segment) {
-			params[paramNode.paramName] = segment
-			return paramNode
-		}
-		return nil
-	}
-
-	params[paramNode.paramName] = segment
-	return paramNode
-}
-
+// adds current node information to the request context
 func (t *node) withContext(r *http.Request) *http.Request {
 	ctx := context.WithValue(r.Context(), keyParam, t)
 	if len(t.params) > 0 {
