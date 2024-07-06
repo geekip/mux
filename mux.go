@@ -7,6 +7,7 @@ package mux
 import (
 	"errors"
 	"net/http"
+	"runtime/debug"
 	"strings"
 )
 
@@ -19,21 +20,21 @@ type (
 		middlewares             []Middleware
 		notFoundHandler         http.HandlerFunc
 		methodNotAllowedHandler http.HandlerFunc
-		internalErrorHandler    http.HandlerFunc
+		internalErrorHandler    func(http.ResponseWriter, *http.Request, interface{})
 		panicHandler            func(error)
 	}
 )
 
 func New() *Mux {
 	return &Mux{
-		node: newNode(),
+		node: newNode(""),
 		notFoundHandler: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "404 page not found", http.StatusNotFound)
 		},
 		methodNotAllowedHandler: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "405 method not allowed", http.StatusMethodNotAllowed)
 		},
-		internalErrorHandler: func(w http.ResponseWriter, r *http.Request) {
+		internalErrorHandler: func(w http.ResponseWriter, r *http.Request, err interface{}) {
 			http.Error(w, "500 internal server error", http.StatusInternalServerError)
 		},
 		panicHandler: func(err error) { panic(err) },
@@ -86,7 +87,8 @@ func (m *Mux) HandlerFunc(pattern string, handler http.HandlerFunc) *Mux {
 func (m *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
-			m.internalErrorHandler.ServeHTTP(w, r)
+			callers := string(debug.Stack())
+			m.internalErrorHandler(w, r, callers)
 		}
 	}()
 
@@ -109,7 +111,7 @@ func (m *Mux) NotFoundHandler(handler http.HandlerFunc) *Mux {
 	return m
 }
 
-func (m *Mux) InternalErrorHandler(handler http.HandlerFunc) *Mux {
+func (m *Mux) InternalErrorHandler(handler func(http.ResponseWriter, *http.Request, interface{})) *Mux {
 	m.internalErrorHandler = handler
 	return m
 }

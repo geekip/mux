@@ -1,6 +1,7 @@
 # geekip/mux
 A simple and lightweight Go HTTP router implemented using a trie tree.
 
+
 ## Features
 
 * [Static routes](#static-routes)
@@ -14,8 +15,26 @@ A simple and lightweight Go HTTP router implemented using a trie tree.
 * [Middleware](#middleware)
 * [FileServe](#file-serve)
 
+# Principle
+Based on Trie, using Radix Tree for path compression. The time complexity for insertion and search operations remains O(m), but the constant factor is relatively small in practice.
+
+```
+Radix Tree
+/
+└── app
+    ├── l
+    |   ├── e (End)
+    |   └── ication (End)
+    └── store (End)
+
+/apple => Matched
+/application => Matched
+/appstore => Matched
+```
+
 # Install
 `$ go get -u github.com/geekip/mux`
+
 
 # Usage
 

@@ -15,10 +15,11 @@ type (
 	ctxKey int
 
 	node struct {
+		key         string
 		handler     http.Handler
 		middlewares []Middleware
 		methods     map[string]http.Handler
-		children    map[rune]*node
+		children    map[string]*node
 		params      map[string]string
 		paramName   string
 		paramNode   *node
@@ -48,10 +49,24 @@ func makeRegexp(pattern string) *regexp.Regexp {
 	return re
 }
 
+func minLength(str1, str2 string) int {
+	minLength := len(str1)
+	if len(str2) < minLength {
+		minLength = len(str2)
+	}
+	for i := 0; i < minLength; i++ {
+		if str1[i] != str2[i] {
+			return i
+		}
+	}
+	return minLength
+}
+
 // creates node
-func newNode() *node {
+func newNode(key string) *node {
 	return &node{
-		children: make(map[rune]*node),
+		key:      key,
+		children: make(map[string]*node),
 		methods:  make(map[string]http.Handler),
 		params:   make(map[string]string),
 	}
@@ -67,10 +82,10 @@ func (node *node) add(method, pattern string, handler http.Handler, middlewares 
 		if segment == "" {
 			continue
 		}
-		// parameter path
+		// insert parameter node
 		if strings.HasPrefix(segment, prefixParam) && strings.HasSuffix(segment, suffixParam) {
 			if node.paramNode == nil {
-				node.paramNode = newNode()
+				node.paramNode = newNode(segment)
 			}
 			param := segment[1 : len(segment)-1]
 			parts := strings.SplitN(param, prefixRegexp, 2)
@@ -79,21 +94,78 @@ func (node *node) add(method, pattern string, handler http.Handler, middlewares 
 				node.paramNode.regex = makeRegexp(parts[1])
 			}
 			node = node.paramNode
-
-			// static path
 		} else {
-			for _, char := range segment {
-				if _, exists := node.children[char]; !exists {
-					node.children[char] = newNode()
-				}
-				node = node.children[char]
-			}
+			// insert static node
+			node = node.addStatic(node, segment)
 		}
 	}
 	node.isEnd = true
 	node.methods[method] = handler
 	node.middlewares = append(node.middlewares, middlewares...)
 	return node
+}
+
+func (n *node) addStatic(node *node, segment string) *node {
+	for len(segment) > 0 {
+		found := false
+		for key, child := range node.children {
+			clen := minLength(segment, key)
+			if clen == 0 {
+				continue
+			}
+			cPrefix := segment[:clen]
+			rPath := segment[clen:]
+			rKey := key[clen:]
+			if len(rKey) > 0 {
+				cNode := newNode(cPrefix)
+				node.children[cPrefix] = cNode
+				cNode.children[rKey] = child
+				delete(node.children, key)
+				child.key = rKey
+
+				if len(rPath) > 0 {
+					cNode.children[rPath] = newNode(rPath)
+					return cNode.children[rPath]
+				} else {
+					return cNode
+				}
+			} else {
+				node = child
+				segment = rPath
+				found = true
+				break
+			}
+		}
+		if !found {
+			node.children[segment] = newNode(segment)
+			return node.children[segment]
+		}
+	}
+	return node
+}
+
+func (n *node) matchParameter(segment string, reSegment []string) (*node, string) {
+	node := n.paramNode
+	// match wildcard parameter
+	if strings.HasPrefix(node.paramName, prefixWildcard) {
+		return node, strings.Join(reSegment, "/")
+	}
+	// parameter node has a regex
+	if node.regex != nil {
+		if !node.regex.MatchString(segment) {
+			return nil, ""
+		}
+	}
+	return node, segment
+}
+
+func (n *node) matchStatic(segment string) *node {
+	for key, child := range n.children {
+		if strings.HasPrefix(segment, key) {
+			return child
+		}
+	}
+	return nil
 }
 
 // Finds a matching route node
@@ -104,58 +176,30 @@ func (node *node) find(method, url string) *node {
 		if segment == "" {
 			continue
 		}
-		// match static path
-		match := true
-		for _, char := range segment {
-			if child, ok := node.children[char]; ok {
-				node = child
-			} else {
-				match = false
-				break
+		// match parameter path
+		if node.paramNode != nil {
+			if n, param := node.matchParameter(segment, segments[i:]); n != nil {
+				node = n
+				params[node.paramName] = param
 			}
-		}
-		if match {
 			continue
 		}
-
-		// match parameter path
-		node = node.paramNode
-		if node == nil {
-			return node
-		}
-
-		// parameter node has a regex
-		if node.regex != nil {
-			if node.regex.MatchString(segment) {
-				params[node.paramName] = segment
-				return node
-			}
-			return nil
-		}
-
-		// match wildcard parameter
-		if strings.HasPrefix(node.paramName, prefixWildcard) {
-			params[node.paramName] = strings.Join(segments[i:], "/")
-			break
-		} else {
-			params[node.paramName] = segment
+		// match static path
+		if n := node.matchStatic(segment); n != nil {
+			node = n
 			continue
 		}
 	}
+
 	if node.isEnd {
 		// get handler
 		handler := node.methods[method]
 		if handler == nil {
 			handler = node.methods[prefixWildcard]
 		}
-
 		// with middlewares
-		mws := node.middlewares
-		count := len(mws)
-		if handler != nil && count > 0 {
-			for i := count - 1; i >= 0; i-- {
-				handler = mws[i](handler)
-			}
+		for i := len(node.middlewares) - 1; i >= 0; i-- {
+			handler = node.middlewares[i](handler)
 		}
 		node.params = params
 		node.handler = handler
@@ -166,7 +210,7 @@ func (node *node) find(method, url string) *node {
 
 // adds current node information to the request context
 func (t *node) withContext(r *http.Request) *http.Request {
-	ctx := context.WithValue(r.Context(), keyParam, t)
+	ctx := context.WithValue(r.Context(), keyRoute, t)
 	if len(t.params) > 0 {
 		ctx = context.WithValue(ctx, keyParam, t.params)
 	}
