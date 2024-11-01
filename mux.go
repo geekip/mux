@@ -7,7 +7,7 @@ package mux
 import (
 	"errors"
 	"net/http"
-	"runtime/debug"
+	"path"
 	"strings"
 )
 
@@ -51,7 +51,7 @@ func (m *Mux) Use(middlewares ...Middleware) *Mux {
 
 func (m *Mux) Group(pattern string) *Mux {
 	return &Mux{
-		prefix:      m.prefix + "/" + pattern,
+		prefix:      pathJoin(m.prefix, pattern),
 		node:        m.node,
 		middlewares: m.middlewares,
 	}
@@ -66,9 +66,9 @@ func (m *Mux) Method(methods ...string) *Mux {
 }
 
 func (m *Mux) Handle(pattern string, handler http.Handler) *Mux {
-	fullPattern := m.prefix + "/" + pattern
+	fullPattern := pathJoin(m.prefix, pattern)
 	if len(m.methods) == 0 {
-		m.methods = append(m.methods, prefixWildcard)
+		m.methods = append(m.methods, "*")
 	}
 	for _, method := range m.methods {
 		node := m.node.add(strings.ToUpper(method), fullPattern, handler, m.middlewares)
@@ -87,8 +87,7 @@ func (m *Mux) HandlerFunc(pattern string, handler http.HandlerFunc) *Mux {
 func (m *Mux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if err := recover(); err != nil {
-			callers := string(debug.Stack())
-			m.internalErrorHandler(w, r, callers)
+			m.internalErrorHandler(w, r, err)
 		}
 	}()
 
@@ -138,4 +137,15 @@ func CurrentRoute(r *http.Request) *node {
 		return val.(*node)
 	}
 	return nil
+}
+
+func pathJoin(absolutePath, relativePath string) string {
+	if relativePath == "" {
+		return absolutePath
+	}
+	finalPath := path.Join(absolutePath, relativePath)
+	if strings.HasSuffix(relativePath, "/") && !strings.HasSuffix(finalPath, "/") {
+		return finalPath + "/"
+	}
+	return finalPath
 }

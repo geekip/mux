@@ -96,7 +96,7 @@ func (node *node) add(method, pattern string, handler http.Handler, middlewares 
 			node = node.paramNode
 		} else {
 			// insert static node
-			node = node.addStatic(node, segment)
+			node = node.addStaticNode(node, segment)
 		}
 	}
 	node.isEnd = true
@@ -105,7 +105,7 @@ func (node *node) add(method, pattern string, handler http.Handler, middlewares 
 	return node
 }
 
-func (n *node) addStatic(node *node, segment string) *node {
+func (n *node) addStaticNode(node *node, segment string) *node {
 	for len(segment) > 0 {
 		found := false
 		for key, child := range node.children {
