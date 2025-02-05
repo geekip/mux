@@ -159,51 +159,70 @@ func (n *node) matchParameter(segment string, reSegment []string) (*node, string
 	return node, segment
 }
 
-func (n *node) matchStatic(segment string) *node {
-	for key, child := range n.children {
-		if strings.HasPrefix(segment, key) {
-			return child
-		}
-	}
-	return nil
-}
-
 // Finds a matching route node
-func (node *node) find(method, url string) *node {
+func (n *node) find(method, url string) *node {
 	params := make(map[string]string)
 	segments := strings.Split(url, "/")
+	currentNode := n
+
 	for i, segment := range segments {
 		if segment == "" {
 			continue
 		}
-		// match parameter path
-		if node.paramNode != nil {
-			if n, param := node.matchParameter(segment, segments[i:]); n != nil {
-				node = n
-				params[node.paramName] = param
+
+		remaining := segment
+		staticMatched := false
+
+		for remaining != "" {
+			found := false
+			var next *node
+
+			for key, child := range currentNode.children {
+				if strings.HasPrefix(remaining, key) {
+					remaining = remaining[len(key):]
+					next = child
+					found = true
+					break
+				}
 			}
-			continue
+
+			if found {
+				currentNode = next
+				if remaining == "" {
+					staticMatched = true
+				}
+			} else {
+				break
+			}
 		}
-		// match static path
-		if n := node.matchStatic(segment); n != nil {
-			node = n
-			continue
+
+		if !staticMatched {
+			if currentNode.paramNode != nil {
+				paramNode, paramValue := currentNode.matchParameter(segment, segments[i:])
+				if paramNode != nil {
+					params[paramNode.paramName] = paramValue
+					currentNode = paramNode
+					staticMatched = true
+				}
+			}
+		}
+
+		if !staticMatched {
+			return nil
 		}
 	}
 
-	if node.isEnd {
-		// get handler
-		handler := node.methods[method]
+	if currentNode.isEnd {
+		handler := currentNode.methods[method]
 		if handler == nil {
-			handler = node.methods[prefixWildcard]
+			handler = currentNode.methods[prefixWildcard]
 		}
-		// with middlewares
-		for i := len(node.middlewares) - 1; i >= 0; i-- {
-			handler = node.middlewares[i](handler)
+		for i := len(currentNode.middlewares) - 1; i >= 0; i-- {
+			handler = currentNode.middlewares[i](handler)
 		}
-		node.params = params
-		node.handler = handler
-		return node
+		currentNode.params = params
+		currentNode.handler = handler
+		return currentNode
 	}
 	return nil
 }
