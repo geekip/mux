@@ -6,16 +6,17 @@ package mux
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 type (
 	ctxKey int
-
-	node struct {
-		key         string
+	node   struct {
 		handler     http.Handler
 		middlewares []Middleware
 		methods     map[string]http.Handler
@@ -33,14 +34,18 @@ var (
 	keyParam       ctxKey = 0
 	keyRoute       ctxKey = 1
 	regexCache     reMaps = make(reMaps)
+	regexCacheMu   sync.Mutex
 	prefixRegexp   string = ":"
 	prefixWildcard string = "*"
 	prefixParam    string = "{"
 	suffixParam    string = "}"
 )
 
-// creates and caches a regular expression pattern
+// makeRegexp compiles and caches regular expressions to avoid redundant compilation
 func makeRegexp(pattern string) *regexp.Regexp {
+	regexCacheMu.Lock()
+	defer regexCacheMu.Unlock()
+
 	if re, exists := regexCache[pattern]; exists {
 		return re
 	}
@@ -49,189 +54,136 @@ func makeRegexp(pattern string) *regexp.Regexp {
 	return re
 }
 
-func minLength(str1, str2 string) int {
-	minLength := len(str1)
-	if len(str2) < minLength {
-		minLength = len(str2)
-	}
-	for i := 0; i < minLength; i++ {
-		if str1[i] != str2[i] {
-			return i
-		}
-	}
-	return minLength
-}
-
-// creates node
-func newNode(key string) *node {
+// newNode creates and initializes a new routing node with empty collections
+func newNode() *node {
 	return &node{
-		key:      key,
 		children: make(map[string]*node),
 		methods:  make(map[string]http.Handler),
 		params:   make(map[string]string),
 	}
 }
 
-// insert node
-func (node *node) add(method, pattern string, handler http.Handler, middlewares []Middleware) *node {
+// add registers a route handler for the given method and pattern
+// Returns error for invalid inputs or route conflicts
+func (n *node) add(method, pattern string, handler http.Handler, middlewares []Middleware) (*node, error) {
 	if method == "" || pattern == "" || handler == nil {
-		return nil
+		return nil, errors.New("mux handle error")
 	}
+	current := n
 	segments := strings.Split(pattern, "/")
-	for _, segment := range segments {
-		if segment == "" {
-			continue
-		}
-		// insert parameter node
-		if strings.HasPrefix(segment, prefixParam) && strings.HasSuffix(segment, suffixParam) {
-			if node.paramNode == nil {
-				node.paramNode = newNode(segment)
-			}
-			param := segment[1 : len(segment)-1]
-			parts := strings.SplitN(param, prefixRegexp, 2)
-			node.paramNode.paramName = parts[0]
-			if len(parts) == 2 {
-				node.paramNode.regex = makeRegexp(parts[1])
-			}
-			node = node.paramNode
-		} else {
-			// insert static node
-			node = node.addStaticNode(node, segment)
-		}
-	}
-	node.isEnd = true
-	node.methods[method] = handler
-	node.middlewares = append(node.middlewares, middlewares...)
-	return node
-}
-
-func (n *node) addStaticNode(node *node, segment string) *node {
-	for len(segment) > 0 {
-		found := false
-		for key, child := range node.children {
-			clen := minLength(segment, key)
-			if clen == 0 {
-				continue
-			}
-			cPrefix := segment[:clen]
-			rPath := segment[clen:]
-			rKey := key[clen:]
-			if len(rKey) > 0 {
-				cNode := newNode(cPrefix)
-				node.children[cPrefix] = cNode
-				cNode.children[rKey] = child
-				delete(node.children, key)
-				child.key = rKey
-
-				if len(rPath) > 0 {
-					cNode.children[rPath] = newNode(rPath)
-					return cNode.children[rPath]
-				} else {
-					return cNode
-				}
-			} else {
-				node = child
-				segment = rPath
-				found = true
-				break
-			}
-		}
-		if !found {
-			node.children[segment] = newNode(segment)
-			return node.children[segment]
-		}
-	}
-	return node
-}
-
-func (n *node) matchParameter(segment string, reSegment []string) (*node, string) {
-	node := n.paramNode
-	// match wildcard parameter
-	if strings.HasPrefix(node.paramName, prefixWildcard) {
-		return node, strings.Join(reSegment, "/")
-	}
-	// parameter node has a regex
-	if node.regex != nil {
-		if !node.regex.MatchString(segment) {
-			return nil, ""
-		}
-	}
-	return node, segment
-}
-
-// Finds a matching route node
-func (n *node) find(method, url string) *node {
-	params := make(map[string]string)
-	segments := strings.Split(url, "/")
-	currentNode := n
+	lastIndex := len(segments) - 1
 
 	for i, segment := range segments {
 		if segment == "" {
 			continue
 		}
 
-		remaining := segment
-		staticMatched := false
+		// Handle parameter segments wrapped in {}
+		if strings.HasPrefix(segment, prefixParam) && strings.HasSuffix(segment, suffixParam) {
+			param := segment[1 : len(segment)-1]
+			parts := strings.SplitN(param, prefixRegexp, 2)
+			paramName := parts[0]
 
-		for remaining != "" {
-			found := false
-			var next *node
-
-			for key, child := range currentNode.children {
-				if strings.HasPrefix(remaining, key) {
-					remaining = remaining[len(key):]
-					next = child
-					found = true
-					break
+			// Validate wildcard position (must be last segment)
+			if strings.HasPrefix(paramName, prefixWildcard) {
+				if i != lastIndex {
+					return nil, fmt.Errorf("router wildcard %s must be the last segment", segment)
 				}
 			}
-
-			if found {
-				currentNode = next
-				if remaining == "" {
-					staticMatched = true
-				}
-			} else {
-				break
-			}
-		}
-
-		if !staticMatched {
-			if currentNode.paramNode != nil {
-				paramNode, paramValue := currentNode.matchParameter(segment, segments[i:])
-				if paramNode != nil {
-					params[paramNode.paramName] = paramValue
-					currentNode = paramNode
-					staticMatched = true
+			// Create parameter node if not exists
+			if current.paramNode == nil {
+				current.paramNode = newNode()
+				current.paramNode.paramName = paramName
+				if len(parts) > 1 {
+					current.paramNode.regex = makeRegexp(parts[1])
 				}
 			}
-		}
-
-		if !staticMatched {
-			return nil
+			current = current.paramNode
+		} else {
+			// Add static path segment to routing tree
+			current = current.addStaticNode(segment)
 		}
 	}
 
-	if currentNode.isEnd {
-		handler := currentNode.methods[method]
+	current.isEnd = true
+	current.methods[method] = handler
+	current.middlewares = append(n.middlewares, middlewares...)
+	return current, nil
+}
+
+// addStaticNode creates/retrieves a child node for static path segments
+func (n *node) addStaticNode(segment string) *node {
+	if child, exists := n.children[segment]; exists {
+		return child
+	}
+	child := newNode()
+	n.children[segment] = child
+	return child
+}
+
+// find traverses the routing tree to match URL segments and collect parameters
+// Returns matched node or nil if no match found
+func (n *node) find(method, url string) *node {
+	params := make(map[string]string)
+	segments := strings.Split(url, "/")
+	current := n
+	for i, segment := range segments {
+		if segment == "" {
+			continue
+		}
+
+		// Try static path match first
+		if child := current.children[segment]; child != nil {
+			current = child
+			continue
+		}
+
+		// Fallback to parameter matching
+		if current.paramNode != nil {
+			paramNode := current.paramNode
+			paramName := paramNode.paramName
+
+			// Validate against regex constraint if present
+			if paramNode.regex != nil && !paramNode.regex.MatchString(segment) {
+				return nil
+			}
+
+			current = paramNode
+
+			// Handle wildcard parameter (capture remaining path segments)
+			if strings.HasPrefix(paramName, prefixWildcard) {
+				params[paramName] = strings.Join(segments[i:], "/")
+				break
+			}
+
+			params[paramName] = segment
+			continue
+		}
+		return nil
+	}
+
+	if current.isEnd {
+		// Find method handler, fallback to wildcard if exists
+		handler := current.methods[method]
 		if handler == nil {
-			handler = currentNode.methods[prefixWildcard]
+			handler = current.methods[prefixWildcard]
 		}
-		for i := len(currentNode.middlewares) - 1; i >= 0; i-- {
-			handler = currentNode.middlewares[i](handler)
+		// Apply middleware chain in reverse order
+		for i := len(current.middlewares) - 1; i >= 0; i-- {
+			handler = current.middlewares[i](handler)
 		}
-		currentNode.params = params
-		currentNode.handler = handler
-		return currentNode
+		current.params = params
+		current.handler = handler
+		return current
 	}
 	return nil
 }
 
-// adds current node information to the request context
-func (t *node) withContext(r *http.Request) *http.Request {
-	ctx := context.WithValue(r.Context(), keyRoute, t)
-	if len(t.params) > 0 {
-		ctx = context.WithValue(ctx, keyParam, t.params)
+// withContext injects route parameters and current node into request context
+func (n *node) withContext(r *http.Request) *http.Request {
+	ctx := context.WithValue(r.Context(), keyRoute, n)
+	if len(n.params) > 0 {
+		ctx = context.WithValue(ctx, keyParam, n.params)
 	}
 	return r.WithContext(ctx)
 }
