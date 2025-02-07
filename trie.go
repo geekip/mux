@@ -69,7 +69,6 @@ func (n *node) add(method, pattern string, handler http.Handler, middlewares []M
 	if method == "" || pattern == "" || handler == nil {
 		return nil, errors.New("mux handle error")
 	}
-	current := n
 	segments := strings.Split(pattern, "/")
 	lastIndex := len(segments) - 1
 
@@ -91,34 +90,29 @@ func (n *node) add(method, pattern string, handler http.Handler, middlewares []M
 				}
 			}
 			// Create parameter node if not exists
-			if current.paramNode == nil {
-				current.paramNode = newNode()
-				current.paramNode.paramName = paramName
+			if n.paramNode == nil {
+				n.paramNode = newNode()
+				n.paramNode.paramName = paramName
 				if len(parts) > 1 {
-					current.paramNode.regex = makeRegexp(parts[1])
+					n.paramNode.regex = makeRegexp(parts[1])
 				}
 			}
-			current = current.paramNode
+			n = n.paramNode
 		} else {
 			// Add static path segment to routing tree
-			current = current.addStaticNode(segment)
+			child, exists := n.children[segment]
+			if !exists {
+				child = newNode()
+				n.children[segment] = child
+			}
+			n = child
 		}
 	}
 
-	current.isEnd = true
-	current.methods[method] = handler
-	current.middlewares = append(n.middlewares, middlewares...)
-	return current, nil
-}
-
-// addStaticNode creates/retrieves a child node for static path segments
-func (n *node) addStaticNode(segment string) *node {
-	if child, exists := n.children[segment]; exists {
-		return child
-	}
-	child := newNode()
-	n.children[segment] = child
-	return child
+	n.isEnd = true
+	n.methods[method] = handler
+	n.middlewares = append(n.middlewares, middlewares...)
+	return n, nil
 }
 
 // find traverses the routing tree to match URL segments and collect parameters
@@ -126,21 +120,20 @@ func (n *node) addStaticNode(segment string) *node {
 func (n *node) find(method, url string) *node {
 	params := make(map[string]string)
 	segments := strings.Split(url, "/")
-	current := n
 	for i, segment := range segments {
 		if segment == "" {
 			continue
 		}
 
 		// Try static path match first
-		if child := current.children[segment]; child != nil {
-			current = child
+		if child := n.children[segment]; child != nil {
+			n = child
 			continue
 		}
 
 		// Fallback to parameter matching
-		if current.paramNode != nil {
-			paramNode := current.paramNode
+		if n.paramNode != nil {
+			paramNode := n.paramNode
 			paramName := paramNode.paramName
 
 			// Validate against regex constraint if present
@@ -148,7 +141,7 @@ func (n *node) find(method, url string) *node {
 				return nil
 			}
 
-			current = paramNode
+			n = paramNode
 
 			// Handle wildcard parameter (capture remaining path segments)
 			if strings.HasPrefix(paramName, prefixWildcard) {
@@ -162,19 +155,19 @@ func (n *node) find(method, url string) *node {
 		return nil
 	}
 
-	if current.isEnd {
+	if n.isEnd {
 		// Find method handler, fallback to wildcard if exists
-		handler := current.methods[method]
+		handler := n.methods[method]
 		if handler == nil {
-			handler = current.methods[prefixWildcard]
+			handler = n.methods[prefixWildcard]
 		}
 		// Apply middleware chain in reverse order
-		for i := len(current.middlewares) - 1; i >= 0; i-- {
-			handler = current.middlewares[i](handler)
+		for i := len(n.middlewares) - 1; i >= 0; i-- {
+			handler = n.middlewares[i](handler)
 		}
-		current.params = params
-		current.handler = handler
-		return current
+		n.params = params
+		n.handler = handler
+		return n
 	}
 	return nil
 }
